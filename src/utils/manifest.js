@@ -3,7 +3,7 @@
  *
  * Image archives can be retrieved from {@link archiveUrl}.
  */
-export class Image {
+export class ManifestImage {
   /**
    * Partition name
    * @type {string}
@@ -11,12 +11,12 @@ export class Image {
   name
 
   /**
-   * SHA-256 checksum of the image, encoded as a hex string
+   * SHA-256 checksum of the unpacked image, encoded as a hex string
    * @type {string}
    */
   checksum
   /**
-   * Size of the unpacked image in bytes
+   * Size of the unpacked and unsparsified image in bytes
    * @type {number}
    */
   size
@@ -43,33 +43,33 @@ export class Image {
    */
   archiveUrl
 
+  /**
+   * Whether the image is compressed and should be unpacked
+   * @type {boolean}
+   */
+  compressed
+
   constructor(json) {
     this.name = json.name
     this.sparse = json.sparse
 
-    if (this.name === 'system') {
-      this.checksum = json.alt.hash
-      this.fileName = `${this.name}-skip-chunks-${json.hash_raw}.img`
-      this.archiveUrl = json.alt.url
-      this.size = json.alt.size
-    } else {
-      this.checksum = json.hash
-      this.fileName = `${this.name}-${json.hash_raw}.img`
-      this.archiveUrl = json.url
-      this.size = json.size
-    }
+    this.fileName = `${this.name}-${json.hash_raw}.img`
+    this.checksum = json.hash
+    this.archiveUrl = json.url
+    this.size = json.size
 
     this.archiveFileName = this.archiveUrl.split('/').pop()
+    this.compressed = this.archiveFileName.endsWith('.xz')
   }
 }
 
 /**
  * @param {string} text
- * @returns {Image[]}
+ * @returns {ManifestImage[]}
  */
 export function createManifest(text) {
   const expectedPartitions = ['aop', 'devcfg', 'xbl', 'xbl_config', 'abl', 'boot', 'system']
-  const partitions = JSON.parse(text).map((image) => new Image(image))
+  const partitions = JSON.parse(text).map((image) => new ManifestImage(image))
 
   // Sort into consistent order
   partitions.sort((a, b) => expectedPartitions.indexOf(a.name) - expectedPartitions.indexOf(b.name))
@@ -86,7 +86,7 @@ export function createManifest(text) {
 
 /**
  * @param {string} url
- * @returns {Promise<Image[]>}
+ * @returns {Promise<ManifestImage[]>}
  */
 export function getManifest(url) {
   return fetch(url)

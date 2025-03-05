@@ -1,18 +1,21 @@
-import { useCallback } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
-import { Step, Error, useFastboot } from '@/utils/fastboot'
+import { QdlManager, Step, Error } from '../utils/qdl'
+import { useImageWorker } from '../utils/image'
+import { isLinux } from '../utils/platform'
+import config from '../config'
 
-import bolt from '@/assets/bolt.svg'
-import cable from '@/assets/cable.svg'
-import cloud from '@/assets/cloud.svg'
-import cloudDownload from '@/assets/cloud_download.svg'
-import cloudError from '@/assets/cloud_error.svg'
-import deviceExclamation from '@/assets/device_exclamation_c3.svg'
-import deviceQuestion from '@/assets/device_question_c3.svg'
-import done from '@/assets/done.svg'
-import exclamation from '@/assets/exclamation.svg'
-import frameAlert from '@/assets/frame_alert.svg'
-import systemUpdate from '@/assets/system_update_c3.svg'
+import bolt from '../assets/bolt.svg'
+import cable from '../assets/cable.svg'
+import cloud from '../assets/cloud.svg'
+import cloudDownload from '../assets/cloud_download.svg'
+import cloudError from '../assets/cloud_error.svg'
+import deviceExclamation from '../assets/device_exclamation_c3.svg'
+import deviceQuestion from '../assets/device_question_c3.svg'
+import done from '../assets/done.svg'
+import exclamation from '../assets/exclamation.svg'
+import frameAlert from '../assets/frame_alert.svg'
+import systemUpdate from '../assets/system_update_c3.svg'
 
 
 const steps = {
@@ -22,8 +25,7 @@ const steps = {
     icon: cloud,
   },
   [Step.READY]: {
-    status: 'Ready',
-    description: 'Tap the button above to begin',
+    status: 'Tap to start',
     bgColor: 'bg-[#51ff00]',
     icon: bolt,
     iconStyle: '',
@@ -36,11 +38,6 @@ const steps = {
   },
   [Step.DOWNLOADING]: {
     status: 'Downloading...',
-    bgColor: 'bg-blue-500',
-    icon: cloudDownload,
-  },
-  [Step.UNPACKING]: {
-    status: 'Unpacking...',
     bgColor: 'bg-blue-500',
     icon: cloudDownload,
   },
@@ -57,8 +54,7 @@ const steps = {
   },
   [Step.DONE]: {
     status: 'Done',
-    description: 'Your device has been updated successfully. You can now unplug the USB cable from your computer. To ' +
-      'complete the system reset, follow the instructions on your device.',
+    description: 'Your device was flashed successfully. You can now unplug the USB cable.',
     bgColor: 'bg-green-500',
     icon: done,
   },
@@ -67,7 +63,7 @@ const steps = {
 const errors = {
   [Error.UNKNOWN]: {
     status: 'Unknown error',
-    description: 'An unknown error has occurred. Restart your browser and try again.',
+    description: 'An unknown error has occurred. Unplug your device, restart your browser and try again.',
     bgColor: 'bg-red-500',
     icon: exclamation,
   },
@@ -79,7 +75,7 @@ const errors = {
   },
   [Error.LOST_CONNECTION]: {
     status: 'Lost connection',
-    description: 'The connection to your device was lost. Check that your cables are connected properly and try again.',
+    description: 'The connection to your device was lost. Unplug your device and try again.',
     icon: cable,
   },
   [Error.DOWNLOAD_FAILED]: {
@@ -109,6 +105,15 @@ const errors = {
     description: 'Your system does not meet the requirements to flash your device. Make sure to use a browser which ' +
       'supports WebUSB and is up to date.',
   },
+  [Error.STORAGE_SPACE]: {
+    description: 'Your system does not have enough space available to download the system image. Your browser may ' +
+      'be restricting the available space if you are in a private, incognito or guest session.',
+  },
+}
+
+if (isLinux) {
+  // this is likely in Step.CONNECTING
+  errors[Error.LOST_CONNECTION].description += ' Did you forget to unbind the device from qcserial?'
 }
 
 
@@ -176,26 +181,39 @@ function beforeUnloadListener(event) {
 
 
 export default function Flash() {
-  const {
-    step,
-    message,
-    progress,
-    error,
+  const [step, setStep] = useState(Step.INITIALIZING)
+  const [message, setMessage] = useState('')
+  const [progress, setProgress] = useState(-1)
+  const [error, setError] = useState(Error.NONE)
+  const [connected, setConnected] = useState(false)
+  const [serial, setSerial] = useState(null)
 
-    onContinue,
-    onRetry,
+  const qdlManager = useRef(null)
+  const imageWorker = useImageWorker()
 
-    connected,
-    serial,
-  } = useFastboot()
+  useEffect(() => {
+    if (!imageWorker.current) return
 
-  const handleContinue = useCallback(() => {
-    onContinue?.()
-  }, [onContinue])
+    // Create QDL manager with callbacks that update React state
+    qdlManager.current = new QdlManager(config.manifests.release, config.loader.url, {
+      onStepChange: setStep,
+      onMessageChange: setMessage,
+      onProgressChange: setProgress,
+      onErrorChange: setError,
+      onConnectionChange: setConnected,
+      onSerialChange: setSerial
+    })
 
-  const handleRetry = useCallback(() => {
-    onRetry?.()
-  }, [onRetry])
+    // Initialize the manager
+    qdlManager.current.initialize(imageWorker.current)
+  }, [config, imageWorker.current])
+
+  // Handle user clicking the start button
+  const handleStart = () => qdlManager.current?.start()
+  const canStart = step === Step.READY && !error
+
+  // Handle retry on error
+  const handleRetry = () => window.location.reload()
 
   const uiState = steps[step]
   if (error) {
@@ -209,6 +227,8 @@ export default function Flash() {
     if (progress >= 0) {
       title += ` (${(progress * 100).toFixed(0)}%)`
     }
+  } else if (error === Error.STORAGE_SPACE) {
+    title = message
   } else {
     title = status
   }
@@ -224,8 +244,8 @@ export default function Flash() {
     <div id="flash" className="relative flex flex-col gap-8 justify-center items-center h-full">
       <div
         className={`p-8 rounded-full ${bgColor}`}
-        style={{ cursor: onContinue ? 'pointer' : 'default' }}
-        onClick={handleContinue}
+        style={{ cursor: canStart ? 'pointer' : 'default' }}
+        onClick={canStart ? handleStart : null}
       >
         <img
           src={icon}
@@ -238,8 +258,8 @@ export default function Flash() {
       <div className="w-full max-w-3xl px-8 transition-opacity duration-300" style={{ opacity: progress === -1 ? 0 : 1 }}>
         <LinearProgress value={progress * 100} barColor={bgColor} />
       </div>
-      <span className={`text-3xl dark:text-white font-mono font-light`}>{title}</span>
-      <span className={`text-xl dark:text-white px-8 max-w-xl`}>{description}</span>
+      <span className="text-3xl dark:text-white font-mono font-light">{title}</span>
+      <span className="text-xl dark:text-white px-8 max-w-xl">{description}</span>
       {error && (
         <button
           className="px-4 py-2 rounded-md bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 transition-colors"
